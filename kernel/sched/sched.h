@@ -518,6 +518,9 @@ struct cfs_rq {
 
 	u64			exec_clock;
 	u64			min_vruntime;
+#ifdef CONFIG_SCHED_CORE
+	u64			min_vruntime_fi;
+#endif
 #ifndef CONFIG_64BIT
 	u64			min_vruntime_copy;
 #endif
@@ -1100,6 +1103,8 @@ static inline raw_spinlock_t *rq_lockp(struct rq *rq)
 
 	return &rq->__lock;
 }
+
+bool cfs_prio_less(struct task_struct *a, struct task_struct *b);
 
 #else /* !CONFIG_SCHED_CORE */
 
