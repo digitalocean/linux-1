@@ -115,19 +115,8 @@ static inline bool prio_less(struct task_struct *a, struct task_struct *b)
 	if (pa == -1) /* dl_prio() doesn't work because of stop_class above */
 		return !dl_time_before(a->dl.deadline, b->dl.deadline);
 
-	if (pa == MAX_RT_PRIO + MAX_NICE)  { /* fair */
-		u64 vruntime = b->se.vruntime;
-
-		/*
-		 * Normalize the vruntime if tasks are in different cpus.
-		 */
-		if (task_cpu(a) != task_cpu(b)) {
-			vruntime -= task_cfs_rq(b)->min_vruntime;
-			vruntime += task_cfs_rq(a)->min_vruntime;
-		}
-
-		return !((s64)(a->se.vruntime - vruntime) <= 0);
-	}
+	if (pa == MAX_RT_PRIO + MAX_NICE)	/* fair */
+		return cfs_prio_less(a, b);
 
 	return false;
 }
@@ -4653,6 +4642,7 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 	struct task_struct *next, *max = NULL;
 	const struct sched_class *class;
 	const struct cpumask *smt_mask;
+	bool fi_before = false;
 	bool need_sync;
 	int i, j, cpu;
 
@@ -4717,6 +4707,7 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 	rq->core->core_cookie = 0UL;
 	if (rq->core->core_forceidle) {
 		need_sync = true;
+		fi_before = true;
 		rq->core->core_forceidle = false;
 	}
 	for_each_cpu(i, smt_mask) {
@@ -4726,6 +4717,14 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 
 		if (i != cpu)
 			update_rq_clock(rq_i);
+	}
+
+	/* Reset the snapshot if core is no longer in force-idle. */
+	if (!fi_before) {
+		for_each_cpu(i, smt_mask) {
+			struct rq *rq_i = cpu_rq(i);
+			rq_i->cfs.min_vruntime_fi = rq_i->cfs.min_vruntime;
+		}
 	}
 
 	/*
@@ -4862,6 +4861,14 @@ next_class:;
 		}
 
 		resched_curr(rq_i);
+	}
+
+	/* Snapshot if core is in force-idle. */
+	if (!fi_before && rq->core->core_forceidle) {
+		for_each_cpu(i, smt_mask) {
+			struct rq *rq_i = cpu_rq(i);
+			rq_i->cfs.min_vruntime_fi = rq_i->cfs.min_vruntime;
+		}
 	}
 
 done:
