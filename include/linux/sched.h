@@ -696,6 +696,8 @@ struct task_struct {
 #ifdef CONFIG_SCHED_CORE
 	struct rb_node			core_node;
 	unsigned long			core_cookie;
+	unsigned long			core_task_cookie;
+	unsigned long			core_group_cookie;
 	unsigned int			core_occupation;
 #endif
 
@@ -2089,7 +2091,6 @@ int sched_trace_rq_nr_running(struct rq *rq);
 
 const struct cpumask *sched_trace_rd_span(struct root_domain *rd);
 
-#ifdef CONFIG_SCHED_CORE
 enum ht_protect_ctx {
 	HT_PROTECT_SYSCALL,
 	HT_PROTECT_IRQ,
@@ -2097,15 +2098,20 @@ enum ht_protect_ctx {
 	HT_PROTECT_FROM_IDLE
 };
 
+#ifdef CONFIG_SCHED_CORE
 void sched_core_unsafe_enter(enum ht_protect_ctx ctx);
 void sched_core_unsafe_exit(enum ht_protect_ctx ctx);
 bool sched_core_wait_till_safe(unsigned long ti_check);
 bool sched_core_kernel_protected(enum ht_protect_ctx ctx);
+int sched_core_share_pid(unsigned long flags, pid_t pid);
+void sched_tsk_free(struct task_struct *tsk);
 #else
 #define sched_core_unsafe_enter(ignore) do { } while (0)
 #define sched_core_unsafe_exit(ignore) do { } while (0)
 #define sched_core_wait_till_safe(ignore) do { } while (0)
 #define sched_core_kernel_protected(ignore) do { } while (0)
+#define sched_core_share_pid(flags, pid) do { } while (0)
+#define sched_tsk_free(tsk) do { } while (0)
 #endif
 
 #endif
