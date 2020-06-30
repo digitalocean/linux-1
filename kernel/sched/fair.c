@@ -10744,6 +10744,15 @@ static void se_fi_update(struct sched_entity *se, unsigned int fi_seq, bool forc
 			cfs_rq->forceidle_seq = fi_seq;
 		}
 
+
+		if (root) {
+			old = cfs_rq->min_vruntime_fi;
+			new = cfs_rq->min_vruntime;
+			root = false;
+			trace_printk("cfs_rq(min_vruntime_fi) %lu->%lu\n",
+				     old, new);
+		}
+
 		cfs_rq->min_vruntime_fi = cfs_rq->min_vruntime;
 	}
 }
