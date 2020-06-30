@@ -247,4 +247,10 @@ struct prctl_mm_map {
 #define PR_SET_IO_FLUSHER		57
 #define PR_GET_IO_FLUSHER		58
 
+/* Request the scheduler to share a core */
+#define PR_SCHED_CORE_SHARE		59
+# define PR_SCHED_CORE_CLEAR		0  /* clear core_sched cookie of pid */
+# define PR_SCHED_CORE_SHARE_FROM	1  /* get core_sched cookie from pid */
+# define PR_SCHED_CORE_SHARE_TO		2  /* push core_sched cookie to pid */
+
 #endif /* _LINUX_PRCTL_H */
