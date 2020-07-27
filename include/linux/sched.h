@@ -2089,4 +2089,23 @@ int sched_trace_rq_nr_running(struct rq *rq);
 
 const struct cpumask *sched_trace_rd_span(struct root_domain *rd);
 
+#ifdef CONFIG_SCHED_CORE
+enum ht_protect_ctx {
+	HT_PROTECT_SYSCALL,
+	HT_PROTECT_IRQ,
+	HT_PROTECT_KVM,
+	HT_PROTECT_FROM_IDLE
+};
+
+void sched_core_unsafe_enter(enum ht_protect_ctx ctx);
+void sched_core_unsafe_exit(enum ht_protect_ctx ctx);
+bool sched_core_wait_till_safe(unsigned long ti_check);
+bool sched_core_kernel_protected(enum ht_protect_ctx ctx);
+#else
+#define sched_core_unsafe_enter(ignore) do { } while (0)
+#define sched_core_unsafe_exit(ignore) do { } while (0)
+#define sched_core_wait_till_safe(ignore) do { } while (0)
+#define sched_core_kernel_protected(ignore) do { } while (0)
+#endif
+
 #endif

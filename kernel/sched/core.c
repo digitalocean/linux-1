@@ -76,6 +76,47 @@ __read_mostly int scheduler_running;
 
 #ifdef CONFIG_SCHED_CORE
 
+static DEFINE_STATIC_KEY_FALSE(sched_core_syscall_protected);
+static DEFINE_STATIC_KEY_FALSE(sched_core_irq_protected);
+static DEFINE_STATIC_KEY_FALSE(sched_core_kvm_protected);
+
+static int __init set_sched_core_ht_protect(char *str)
+{
+	char *tok;
+
+	if (!str)
+		return 0;
+
+	while ((tok = strsep(&str, ","))) {
+		if (!strncmp("syscall", tok, 7)) {
+			static_branch_enable(&sched_core_syscall_protected);
+		} else if (!strncmp("irq", tok, 3)) {
+			static_branch_enable(&sched_core_irq_protected);
+		} else if (!strncmp("kvm", tok, 3)) {
+			static_branch_enable(&sched_core_kvm_protected);
+		} else {
+			return 0;
+		}
+	}
+
+	return 1;
+}
+__setup("ht_protect=", set_sched_core_ht_protect);
+
+bool sched_core_kernel_protected(enum ht_protect_ctx ctx)
+{
+	switch (ctx) {
+		case HT_PROTECT_SYSCALL:
+			return static_branch_likely(&sched_core_syscall_protected);
+		case HT_PROTECT_IRQ:
+			return static_branch_likely(&sched_core_irq_protected);
+		case HT_PROTECT_KVM:
+			return static_branch_likely(&sched_core_kvm_protected);
+		default:
+			return false;
+	}
+}
+
 DEFINE_STATIC_KEY_FALSE(__sched_core_enabled);
 
 /* kernel prio, less is more */
@@ -4601,6 +4642,249 @@ static inline bool cookie_match(struct task_struct *a, struct task_struct *b)
 	return a->core_cookie == b->core_cookie;
 }
 
+/*
+ * Handler to attempt to enter kernel. It does nothing because the exit to
+ * usermode or guest mode will do the actual work (of waiting if needed).
+ */
+static void sched_core_irq_work(struct irq_work *work)
+{
+}
+
+static inline void init_sched_core_irq_work(struct rq *rq)
+{
+	init_irq_work(&rq->core_irq_work, sched_core_irq_work);
+}
+
+/*
+ * sched_core_wait_till_safe - Pause the caller's hyperthread until the core
+ * exits the core-wide unsafe state. Obviously the CPU calling this function
+ * should not be responsible for the core being in the core-wide unsafe state
+ * otherwise it will deadlock.
+ *
+ * @ti_check: We spin here with IRQ enabled and preempt disabled. Break out of
+ *            the loop if TIF flags are set and notify caller about it.
+ *
+ * IRQs should be disabled.
+ */
+bool sched_core_wait_till_safe(unsigned long ti_check)
+{
+	bool restart = false;
+	struct rq *rq;
+	int cpu;
+
+	/* We clear the thread flag only at the end, so no need to check for it. */
+	ti_check &= ~_TIF_UNSAFE_RET;
+
+	cpu = smp_processor_id();
+	rq = cpu_rq(cpu);
+
+	if (!sched_core_enabled(rq))
+		goto ret;
+
+	/* Down grade to allow interrupts to prevent stop_machine lockups.. */
+	preempt_disable();
+	local_irq_enable();
+
+	/*
+	 * Wait till the core of this HT is not in an unsafe state.
+	 *
+	 * Pair with raw_spin_lock/unlock() in sched_core_unsafe_enter/exit().
+	 */
+	while (smp_load_acquire(&rq->core->core_unsafe_nest) > 0) {
+		cpu_relax();
+		if (READ_ONCE(current_thread_info()->flags) & ti_check) {
+			restart = true;
+			break;
+		}
+	}
+
+	/* Upgrade it back to the expectations of entry code. */
+	local_irq_disable();
+	preempt_enable();
+
+ret:
+	if (!restart)
+		clear_tsk_thread_flag(current, TIF_UNSAFE_RET);
+
+	return restart;
+}
+
+static inline bool __do_sched_core_unsafe_work(enum ht_protect_ctx ctx)
+{
+	/* When called from idle, do nothing if no kind of kernel protection exists. */
+	if (!static_branch_likely(&sched_core_irq_protected) &&
+	    !static_branch_likely(&sched_core_kvm_protected) &&
+	    !static_branch_likely(&sched_core_syscall_protected))
+		return false;
+
+	switch (ctx) {
+		case HT_PROTECT_SYSCALL:
+			return static_branch_likely(&sched_core_syscall_protected);
+		case HT_PROTECT_IRQ:
+			return static_branch_likely(&sched_core_irq_protected);
+		case HT_PROTECT_KVM:
+			return static_branch_likely(&sched_core_kvm_protected);
+		case HT_PROTECT_FROM_IDLE:
+			return true;
+		default:
+			return false;
+	}
+
+	return true;
+}
+
+/*
+ * Enter the core-wide IRQ state. Sibling will be paused if it is running
+ * 'untrusted' code, until sched_core_unsafe_exit() is called. Every attempt to
+ * avoid sending useless IPIs is made. Must be called only from hard IRQ
+ * context.
+ */
+void sched_core_unsafe_enter(enum ht_protect_ctx ctx)
+{
+	const struct cpumask *smt_mask;
+	unsigned long flags;
+	struct rq *rq;
+	int i, cpu;
+
+	if (!__do_sched_core_unsafe_work(ctx))
+		return;
+
+	local_irq_save(flags);
+	cpu = smp_processor_id();
+	rq = cpu_rq(cpu);
+	if (!sched_core_enabled(rq))
+		goto ret;
+
+	/* Ensure that on return to user/guest, we check whether to wait. */
+	if (current->core_cookie)
+		set_tsk_thread_flag(current, TIF_UNSAFE_RET);
+
+	/* Count unsafe_enter() calls received without unsafe_exit() on this CPU. */
+	rq->core_this_unsafe_nest++;
+
+	/*
+	 * Should not nest: enter() should only pair with exit(). Both are done
+	 * during the first entry into kernel and the last exit from kernel.
+	 * Nested kernel entries (such as nested interrupts) will only trigger
+	 * enter() and exit() on the outer most kernel entry and exit.
+	 */
+	if (WARN_ON_ONCE(rq->core_this_unsafe_nest != 1))
+		goto ret;
+
+	raw_spin_lock(rq_lockp(rq));
+	smt_mask = cpu_smt_mask(cpu);
+
+	/*
+	 * Contribute this CPU's unsafe_enter() to the core-wide unsafe_enter()
+	 * count.  The raw_spin_unlock() release semantics pairs with the nest
+	 * counter's smp_load_acquire() in sched_core_wait_till_safe().
+	 */
+	WRITE_ONCE(rq->core->core_unsafe_nest, rq->core->core_unsafe_nest + 1);
+
+	if (WARN_ON_ONCE(rq->core->core_unsafe_nest == UINT_MAX))
+		goto unlock;
+
+	if (irq_work_is_busy(&rq->core_irq_work)) {
+		/*
+		 * Do nothing more since we are in an IPI sent from another
+		 * sibling to enforce safety. That sibling would have sent IPIs
+		 * to all of the HTs.
+		 */
+		goto unlock;
+	}
+
+	/*
+	 * If we are not the first ones on the core to enter core-wide unsafe
+	 * state, do nothing.
+	 */
+	if (rq->core->core_unsafe_nest > 1)
+		goto unlock;
+
+	/* Do nothing more if the core is not tagged. */
+	if (!rq->core->core_cookie)
+		goto unlock;
+
+	for_each_cpu(i, smt_mask) {
+		struct rq *srq = cpu_rq(i);
+
+		if (i == cpu || cpu_is_offline(i))
+			continue;
+
+		if (!srq->curr->mm || is_task_rq_idle(srq->curr))
+			continue;
+
+		/* Skip if HT is not running a tagged task. */
+		if (!srq->curr->core_cookie && !srq->core_pick)
+			continue;
+
+		/*
+		 * Force sibling into the kernel by IPI. If work was already
+		 * pending, no new IPIs are sent. This is Ok since the receiver
+		 * would already be in the kernel, or on its way to it.
+		 */
+		irq_work_queue_on(&srq->core_irq_work, i);
+	}
+unlock:
+	raw_spin_unlock(rq_lockp(rq));
+ret:
+	local_irq_restore(flags);
+}
+
+/*
+ * Process any work need for either exiting the core-wide unsafe state, or for
+ * waiting on this hyperthread if the core is still in this state.
+ *
+ * @idle: Are we called from the idle loop?
+ */
+void sched_core_unsafe_exit(enum ht_protect_ctx ctx)
+{
+	unsigned long flags;
+	unsigned int nest;
+	struct rq *rq;
+	int cpu;
+
+	if (!__do_sched_core_unsafe_work(ctx))
+		return;
+
+	local_irq_save(flags);
+	cpu = smp_processor_id();
+	rq = cpu_rq(cpu);
+
+	/* Do nothing if core-sched disabled. */
+	if (!sched_core_enabled(rq))
+		goto ret;
+
+	/*
+	 * Can happen when a process is forked and the first return to user
+	 * mode is a syscall exit. Either way, there's nothing to do.
+	 */
+	if (rq->core_this_unsafe_nest == 0)
+		goto ret;
+
+	rq->core_this_unsafe_nest--;
+
+	/* enter() should be paired with exit() only. */
+	if (WARN_ON_ONCE(rq->core_this_unsafe_nest != 0))
+		goto ret;
+
+	raw_spin_lock(rq_lockp(rq));
+	/*
+	 * Core-wide nesting counter can never be 0 because we are
+	 * still in it on this CPU.
+	 */
+	nest = rq->core->core_unsafe_nest;
+	WARN_ON_ONCE(!nest);
+
+	WRITE_ONCE(rq->core->core_unsafe_nest, nest - 1);
+	/*
+	 * The raw_spin_unlock release semantics pairs with the nest counter's
+	 * smp_load_acquire() in sched_core_wait_till_safe().
+	 */
+	raw_spin_unlock(rq_lockp(rq));
+ret:
+	local_irq_restore(flags);
+}
+
 // XXX fairness/fwd progress conditions
 /*
  * Returns
@@ -5006,6 +5290,7 @@ static inline void sched_core_cpu_starting(unsigned int cpu)
 			rq = cpu_rq(i);
 			if (rq->core && rq->core == rq)
 				core_rq = rq;
+			init_sched_core_irq_work(rq);
 		}
 
 		if (!core_rq)

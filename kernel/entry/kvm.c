@@ -47,3 +47,38 @@ int xfer_to_guest_mode_handle_work(struct kvm_vcpu *vcpu)
 	return xfer_to_guest_mode_work(vcpu, ti_work);
 }
 EXPORT_SYMBOL_GPL(xfer_to_guest_mode_handle_work);
+
+/**
+ * kvm_enter_from_guest_mode - Hook called just after entering kernel from guest.
+ * Caller should ensure interrupts are off.
+ */
+void kvm_enter_from_guest_mode(void)
+{
+	if (!entry_kernel_protected(HT_PROTECT_KVM))
+		return;
+
+	sched_core_unsafe_enter(HT_PROTECT_KVM);
+}
+EXPORT_SYMBOL_GPL(kvm_enter_from_guest_mode);
+
+/**
+ * kvm_exit_to_guest_mode - Hook called just before entering guest from kernel.
+ * Caller should ensure interrupts are off.
+ */
+void kvm_exit_to_guest_mode(void)
+{
+	if (!entry_kernel_protected(HT_PROTECT_KVM))
+		return;
+
+	sched_core_unsafe_exit(HT_PROTECT_KVM);
+
+	/*
+	 * Wait here instead of in xfer_to_guest_mode_handle_work(). The reason
+	 * is because in vcpu_run(), xfer_to_guest_mode_handle_work() is called
+	 * when a vCPU was either runnable or blocked. However, we only care
+	 * about the runnable case (VM entry/exit) which is handled by
+	 * vcpu_enter_guest().
+	 */
+	sched_core_wait_till_safe(XFER_TO_GUEST_MODE_WORK);
+}
+EXPORT_SYMBOL_GPL(kvm_exit_to_guest_mode);

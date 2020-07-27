@@ -33,6 +33,10 @@
 # define _TIF_PATCH_PENDING		(0)
 #endif
 
+#ifndef _TIF_UNSAFE_RET
+# define _TIF_UNSAFE_RET		(0)
+#endif
+
 #ifndef _TIF_UPROBE
 # define _TIF_UPROBE			(0)
 #endif
@@ -70,7 +74,7 @@
 #define EXIT_TO_USER_MODE_WORK						\
 	(_TIF_SIGPENDING | _TIF_NOTIFY_RESUME | _TIF_UPROBE |		\
 	 _TIF_NEED_RESCHED | _TIF_PATCH_PENDING |			\
-	 ARCH_EXIT_TO_USER_MODE_WORK)
+	 _TIF_UNSAFE_RET | ARCH_EXIT_TO_USER_MODE_WORK)
 
 /**
  * arch_check_user_regs - Architecture specific sanity check for user mode regs
@@ -402,4 +406,29 @@ void irqentry_exit_cond_resched(void);
  */
 void noinstr irqentry_exit(struct pt_regs *regs, irqentry_state_t state);
 
+/* entry_kernel_protected - Is kernel protection on entry/exit into kernel supported? */
+static inline bool entry_kernel_protected(enum ht_protect_ctx ctx)
+{
+	if (!IS_ENABLED(CONFIG_SCHED_CORE))
+		return false;
+	return sched_core_kernel_protected(ctx) && _TIF_UNSAFE_RET != 0;
+}
+
+/**
+ * entry_idle_enter - General tasks to perform during idle entry.
+ */
+static inline void entry_idle_enter(void)
+{
+	/* Entering idle ends the protected kernel region. */
+	sched_core_unsafe_exit(HT_PROTECT_FROM_IDLE);
+}
+
+/**
+ * entry_idle_exit  - General tasks to perform during idle exit.
+ */
+static inline void entry_idle_exit(void)
+{
+	/* Exiting idle (re)starts the protected kernel region. */
+	sched_core_unsafe_enter(HT_PROTECT_FROM_IDLE);
+}
 #endif
