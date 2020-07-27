@@ -18,7 +18,8 @@
  * 2) Invoke context tracking if enabled to reactivate RCU
  * 3) Trace interrupts off state
  */
-static __always_inline void enter_from_user_mode(struct pt_regs *regs)
+static __always_inline void enter_from_user_mode(struct pt_regs *regs,
+						 enum ht_protect_ctx ctx)
 {
 	arch_check_user_regs(regs);
 	lockdep_hardirqs_off(CALLER_ADDR0);
@@ -28,6 +29,9 @@ static __always_inline void enter_from_user_mode(struct pt_regs *regs)
 
 	instrumentation_begin();
 	trace_hardirqs_off_finish();
+
+	if (entry_kernel_protected(ctx))
+		sched_core_unsafe_enter(ctx);
 	instrumentation_end();
 }
 
@@ -92,7 +96,7 @@ noinstr long syscall_enter_from_user_mode(struct pt_regs *regs, long syscall)
 {
 	long ret;
 
-	enter_from_user_mode(regs);
+	enter_from_user_mode(regs, HT_PROTECT_SYSCALL);
 
 	instrumentation_begin();
 	local_irq_enable();
@@ -104,7 +108,7 @@ noinstr long syscall_enter_from_user_mode(struct pt_regs *regs, long syscall)
 
 noinstr void syscall_enter_from_user_mode_prepare(struct pt_regs *regs)
 {
-	enter_from_user_mode(regs);
+	enter_from_user_mode(regs, HT_PROTECT_SYSCALL);
 	instrumentation_begin();
 	local_irq_enable();
 	instrumentation_end();
@@ -137,8 +141,29 @@ static __always_inline void exit_to_user_mode(void)
 /* Workaround to allow gradual conversion of architecture code */
 void __weak arch_do_signal(struct pt_regs *regs) { }
 
+static unsigned long exit_to_user_get_work(enum ht_protect_ctx ctx)
+{
+	unsigned long ti_work = READ_ONCE(current_thread_info()->flags);
+
+	if (!entry_kernel_protected(ctx))
+		return ti_work;
+
+#ifdef CONFIG_SCHED_CORE
+	ti_work &= EXIT_TO_USER_MODE_WORK;
+	if ((ti_work & _TIF_UNSAFE_RET) == ti_work) {
+		sched_core_unsafe_exit(ctx);
+		if (sched_core_wait_till_safe(EXIT_TO_USER_MODE_WORK)) {
+			sched_core_unsafe_enter(ctx); /* not exiting to user yet. */
+		}
+	}
+
+	return READ_ONCE(current_thread_info()->flags);
+#endif
+}
+
 static unsigned long exit_to_user_mode_loop(struct pt_regs *regs,
-					    unsigned long ti_work)
+					    unsigned long ti_work,
+					    enum ht_protect_ctx ctx)
 {
 	/*
 	 * Before returning to user space ensure that all pending work
@@ -174,21 +199,22 @@ static unsigned long exit_to_user_mode_loop(struct pt_regs *regs,
 		 * enabled above.
 		 */
 		local_irq_disable_exit_to_user();
-		ti_work = READ_ONCE(current_thread_info()->flags);
+		ti_work = exit_to_user_get_work(ctx);
 	}
 
 	/* Return the latest work state for arch_exit_to_user_mode() */
 	return ti_work;
 }
 
-static void exit_to_user_mode_prepare(struct pt_regs *regs)
+static void exit_to_user_mode_prepare(struct pt_regs *regs, enum ht_protect_ctx ctx)
 {
-	unsigned long ti_work = READ_ONCE(current_thread_info()->flags);
+	unsigned long ti_work;
 
 	lockdep_assert_irqs_disabled();
+	ti_work = exit_to_user_get_work(ctx);
 
 	if (unlikely(ti_work & EXIT_TO_USER_MODE_WORK))
-		ti_work = exit_to_user_mode_loop(regs, ti_work);
+		ti_work = exit_to_user_mode_loop(regs, ti_work, ctx);
 
 	arch_exit_to_user_mode_prepare(regs, ti_work);
 
@@ -263,20 +289,20 @@ __visible noinstr void syscall_exit_to_user_mode(struct pt_regs *regs)
 	instrumentation_begin();
 	syscall_exit_to_user_mode_prepare(regs);
 	local_irq_disable_exit_to_user();
-	exit_to_user_mode_prepare(regs);
+	exit_to_user_mode_prepare(regs, HT_PROTECT_SYSCALL);
 	instrumentation_end();
 	exit_to_user_mode();
 }
 
 noinstr void irqentry_enter_from_user_mode(struct pt_regs *regs)
 {
-	enter_from_user_mode(regs);
+	enter_from_user_mode(regs, HT_PROTECT_IRQ);
 }
 
 noinstr void irqentry_exit_to_user_mode(struct pt_regs *regs)
 {
 	instrumentation_begin();
-	exit_to_user_mode_prepare(regs);
+	exit_to_user_mode_prepare(regs, HT_PROTECT_IRQ);
 	instrumentation_end();
 	exit_to_user_mode();
 }

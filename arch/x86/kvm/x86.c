@@ -8912,6 +8912,7 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 	 */
 	smp_mb__after_srcu_read_unlock();
 
+	kvm_exit_to_guest_mode();
 	/*
 	 * This handles the case where a posted interrupt was
 	 * notified with kvm_vcpu_kick.
@@ -9005,6 +9006,7 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 		}
 	}
 
+	kvm_enter_from_guest_mode();
 	local_irq_enable();
 	preempt_enable();
 
