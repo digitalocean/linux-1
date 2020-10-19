@@ -1,0 +1,208 @@
+Core-Scheduling
+===============
+Enclosed is series v9 of core scheduling.
+v9 is rebased on tip/master (fe4adf6f92c4 ("Merge branch 'irq/core'"))..
+I hope that this version is acceptable to be merged (pending any new review
+comments that arise) as the main issues in the past are all resolved:
+ 1. Vruntime comparison.
+ 2. Documentation updates.
+ 3. CGroup and per-task interface developed by Google and Oracle.
+ 4. Hotplug fixes.
+Almost all patches also have Reviewed-by or Acked-by tag. See below for full
+list of changes in v9.
+
+Introduction of feature
+=======================
+Core scheduling is a feature that allows only trusted tasks to run
+concurrently on cpus sharing compute resources (eg: hyperthreads on a
+core). The goal is to mitigate the core-level side-channel attacks
+without requiring to disable SMT (which has a significant impact on
+performance in some situations). Core scheduling (as of v7) mitigates
+user-space to user-space attacks and user to kernel attack when one of
+the siblings enters the kernel via interrupts or system call.
+
+By default, the feature doesn't change any of the current scheduler
+behavior. The user decides which tasks can run simultaneously on the
+same core (for now by having them in the same tagged cgroup). When a tag
+is enabled in a cgroup and a task from that cgroup is running on a
+hardware thread, the scheduler ensures that only idle or trusted tasks
+run on the other sibling(s). Besides security concerns, this feature can
+also be beneficial for RT and performance applications where we want to
+control how tasks make use of SMT dynamically.
+
+Both a CGroup and Per-task interface via prctl(2) are provided for configuring
+core sharing. More details are provided in documentation patch.  Kselftests are
+provided to verify the correctness/rules of the interface.
+
+Testing
+=======
+ChromeOS testing shows 300% improvement in keypress latency on a Google
+docs key press with Google hangout test (the maximum latency drops from 150ms
+to 50ms for keypresses).
+
+Julien: TPCC tests showed improvements with core-scheduling as below. With kernel
+protection enabled, it does not show any regression. Possibly ASI will improve
+the performance for those who choose kernel protection (can be controlled through
+ht_protect kernel command line option).
+				average		stdev		diff
+baseline (SMT on)		1197.272	44.78312824	
+core sched (   kernel protect)	412.9895	45.42734343	-65.51%
+core sched (no kernel protect)	686.6515	71.77756931	-42.65%
+nosmt				408.667		39.39042872	-65.87%
+(Note these results are from v8).
+
+Vineeth tested sysbench and does not see any regressions.
+Hong and Aubrey tested v9 and see results similar to v8. There is a known issue
+with uperf that does regress. This appears to be because of ksoftirq heavily
+contending with other tasks on the core. The consensus is this can be improved
+in the future.
+
+Other changes:
+- Fixed breaking of coresched= option patch on !SCHED_CORE builds.
+- Trivial commit message changes.
+
+Changes in v10
+==============
+- migration code changes from Aubrey.
+- dropped patches merged.
+- interface changes from Josh and Chris.
+
+Changes in v9
+=============
+- Note that the vruntime snapshot change is written in 2 patches to show the
+  progression of the idea and prevent merge conflicts:
+    sched/fair: Snapshot the min_vruntime of CPUs on force idle
+    sched: Improve snapshotting of min_vruntime for CGroups
+  Same with the RT priority inversion change:
+    sched: Fix priority inversion of cookied task with sibling
+    sched: Improve snapshotting of min_vruntime for CGroups
+- Disable coresched on certain AMD HW.
+
+Changes in v8
+=============
+- New interface/API implementation
+  - Joel
+- Revised kernel protection patch
+  - Joel
+- Revised Hotplug fixes
+  - Joel
+- Minor bug fixes and address review comments
+  - Vineeth
+
+Changes in v7
+=============
+- Kernel protection from untrusted usermode tasks
+  - Joel, Vineeth
+- Fix for hotplug crashes and hangs
+  - Joel, Vineeth
+
+Changes in v6
+=============
+- Documentation
+  - Joel
+- Pause siblings on entering nmi/irq/softirq
+  - Joel, Vineeth
+- Fix for RCU crash
+  - Joel
+- Fix for a crash in pick_next_task
+  - Yu Chen, Vineeth
+- Minor re-write of core-wide vruntime comparison
+  - Aaron Lu
+- Cleanup: Address Review comments
+- Cleanup: Remove hotplug support (for now)
+- Build fixes: 32 bit, SMT=n, AUTOGROUP=n etc
+  - Joel, Vineeth
+
+Changes in v5
+=============
+- Fixes for cgroup/process tagging during corner cases like cgroup
+  destroy, task moving across cgroups etc
+  - Tim Chen
+- Coresched aware task migrations
+  - Aubrey Li
+- Other minor stability fixes.
+
+Changes in v4
+=============
+- Implement a core wide min_vruntime for vruntime comparison of tasks
+  across cpus in a core.
+  - Aaron Lu
+- Fixes a typo bug in setting the forced_idle cpu.
+  - Aaron Lu
+
+Changes in v3
+=============
+- Fixes the issue of sibling picking up an incompatible task
+  - Aaron Lu
+  - Vineeth Pillai
+  - Julien Desfossez
+- Fixes the issue of starving threads due to forced idle
+  - Peter Zijlstra
+- Fixes the refcounting issue when deleting a cgroup with tag
+  - Julien Desfossez
+- Fixes a crash during cpu offline/online with coresched enabled
+  - Vineeth Pillai
+- Fixes a comparison logic issue in sched_core_find
+  - Aaron Lu
+
+Changes in v2
+=============
+- Fixes for couple of NULL pointer dereference crashes
+  - Subhra Mazumdar
+  - Tim Chen
+- Improves priority comparison logic for process in different cpus
+  - Peter Zijlstra
+  - Aaron Lu
+- Fixes a hard lockup in rq locking
+  - Vineeth Pillai
+  - Julien Desfossez
+- Fixes a performance issue seen on IO heavy workloads
+  - Vineeth Pillai
+  - Julien Desfossez
+- Fix for 32bit build
+  - Aubrey Li
+
+Future work
+===========
+- Load balancing/Migration fixes for core scheduling.
+  With v6, Load balancing is partially coresched aware, but has some
+  issues w.r.t process/taskgroup weights:
+  https://lwn.net/ml/linux-kernel/20200225034438.GA617271@z...
+
+option-prefix PATCH -tip
+option-subject Core scheduling v9
+option-skip-get-maint
+option-skip-checkpatch
+---------------------------------------------------
+Notes:
+- Add Josh/Chris from to the interface patch.
+- Move sched_core_fork to before the CGroup code in coretag.c
+- Does the core_cookies_lock need to be mutex?
+- Does the sched_core_tasks_mutex need to be spinlock?
+- Do these spinlocks need to be raw?
+- Follow up about 'Josh: does this part of a sched_fork have a bug? Chris, can you share the atomic crash stack trace?'
+
+Old notes:
+
+- Add vingu to CC list.
+- pick_task vs pick_next_task for unconstrained pick.
+
+Contacted for tags privately:
+ - Dario, Alexander, Konrad (ASI group)
+https://mail.google.com/mail/u/0?ik=a552786c20&view=om&permmsgid=msg-a%3Ar345763161239455473
+
+ - Aubrey, Tim for Intel (to see if Intel interested)
+https://mail.google.com/mail/u/2/#sent/FMfcgxwKjBGqmfqpTSrdSNlSFtLFkhxF
+
+ - Chris, Hao, Ben, Josh for Oracle and Google (interface)
+https://mail.google.com/mail/u/2/#search/in%3Asent+hao++b/FMfcgxwKjBGqmfqpdGtMmNbwGwLWVchL
+I asked Hao Luo for Reviewed-by and testing of upstream cgroup patch.
+
+Next steps:
+- Reply to PeterZ and Tejun.
+- Find how to rid stop_machine.
+  no more stop_machine() in the code.
+- Chris Hyser for updated prctl interface
+- Josh Don for updated CGroup interface
+- split up of kernel protection command line option
+
