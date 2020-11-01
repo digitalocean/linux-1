@@ -1753,9 +1753,6 @@ static inline void init_uclamp(void) { }
 
 static inline void enqueue_task(struct rq *rq, struct task_struct *p, int flags)
 {
-	if (sched_core_enabled(rq))
-		sched_core_enqueue(rq, p);
-
 	if (!(flags & ENQUEUE_NOCLOCK))
 		update_rq_clock(rq);
 
@@ -1766,6 +1763,9 @@ static inline void enqueue_task(struct rq *rq, struct task_struct *p, int flags)
 
 	uclamp_rq_inc(rq, p);
 	p->sched_class->enqueue_task(rq, p, flags);
+
+	if (sched_core_enabled(rq))
+		sched_core_enqueue(rq, p);
 }
 
 static inline void dequeue_task(struct rq *rq, struct task_struct *p, int flags)
