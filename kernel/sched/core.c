@@ -4711,6 +4711,7 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 	need_sync = !!rq->core->core_cookie;
 
 	/* reset state */
+reset:
 	rq->core->core_cookie = 0UL;
 	if (rq->core->core_forceidle) {
 		need_sync = true;
@@ -4749,14 +4750,8 @@ again:
 				/*
 				 * If there weren't no cookies; we don't need to
 				 * bother with the other siblings.
-				 * If the rest of the core is not running a tagged
-				 * task, i.e.  need_sync == 0, and the current CPU
-				 * which called into the schedule() loop does not
-				 * have any tasks for this class, skip selecting for
-				 * other siblings since there's no point. We don't skip
-				 * for RT/DL because that could make CFS force-idle RT.
 				 */
-				if (i == cpu && !need_sync && class == &fair_sched_class)
+				if (i == cpu && !need_sync)
 					goto next_class;
 
 				continue;
@@ -4766,7 +4761,20 @@ again:
 			 * Optimize the 'normal' case where there aren't any
 			 * cookies and we don't need to sync up.
 			 */
-			if (i == cpu && !need_sync && !p->core_cookie) {
+			if (i == cpu && !need_sync) {
+				if (p->core_cookie) {
+					/*
+					 * This optimization is only valid as
+					 * long as there are no cookies
+					 * involved. We may have skipped
+					 * non-empty higher priority classes on
+					 * siblings, which are empty on this
+					 * CPU, so start over.
+					 */
+					need_sync = true;
+					goto reset;
+				}
+
 				next = p;
 				goto done;
 			}
@@ -4806,7 +4814,6 @@ again:
 					 */
 					need_sync = true;
 				}
-
 			}
 		}
 next_class:;
