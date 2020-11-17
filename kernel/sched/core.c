@@ -4696,6 +4696,15 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 	put_prev_task_balance(rq, prev, rf);
 
 	smt_mask = cpu_smt_mask(cpu);
+	need_sync = !!rq->core->core_cookie;
+
+	/* reset state */
+	rq->core->core_cookie = 0UL;
+	if (rq->core->core_forceidle) {
+		need_sync = true;
+		fi_before = true;
+		rq->core->core_forceidle = false;
+	}
 
 	/*
 	 * core->core_task_seq, core->core_pick_seq, rq->core_sched_seq
@@ -4708,15 +4717,25 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 	 * 'Fix' this by also increasing @task_seq for every pick.
 	 */
 	rq->core->core_task_seq++;
-	need_sync = !!rq->core->core_cookie;
 
-	/* reset state */
-reset:
-	rq->core->core_cookie = 0UL;
-	if (rq->core->core_forceidle) {
+	/*
+	 * Optimize for common case where this CPU has no cookies
+	 * and there are no cookied tasks running on siblings.
+	 */
+	if (!need_sync) {
+		for_each_class(class) {
+			next = class->pick_task(rq);
+			if (next)
+				break;
+		}
+
+		if (!next->core_cookie) {
+			rq->core_pick = NULL;
+			goto done;
+		}
 		need_sync = true;
-		rq->core->core_forceidle = false;
 	}
+
 	for_each_cpu(i, smt_mask) {
 		struct rq *rq_i = cpu_rq(i);
 
@@ -4746,38 +4765,8 @@ again:
 			 * core.
 			 */
 			p = pick_task(rq_i, class, max);
-			if (!p) {
-				/*
-				 * If there weren't no cookies; we don't need to
-				 * bother with the other siblings.
-				 */
-				if (i == cpu && !need_sync)
-					goto next_class;
-
+			if (!p)
 				continue;
-			}
-
-			/*
-			 * Optimize the 'normal' case where there aren't any
-			 * cookies and we don't need to sync up.
-			 */
-			if (i == cpu && !need_sync) {
-				if (p->core_cookie) {
-					/*
-					 * This optimization is only valid as
-					 * long as there are no cookies
-					 * involved. We may have skipped
-					 * non-empty higher priority classes on
-					 * siblings, which are empty on this
-					 * CPU, so start over.
-					 */
-					need_sync = true;
-					goto reset;
-				}
-
-				next = p;
-				goto done;
-			}
 
 			rq_i->core_pick = p;
 
@@ -4805,18 +4794,9 @@ again:
 						cpu_rq(j)->core_pick = NULL;
 					}
 					goto again;
-				} else {
-					/*
-					 * Once we select a task for a cpu, we
-					 * should not be doing an unconstrained
-					 * pick because it might starve a task
-					 * on a forced idle cpu.
-					 */
-					need_sync = true;
 				}
 			}
 		}
-next_class:;
 	}
 
 	rq->core->core_pick_seq = rq->core->core_task_seq;
