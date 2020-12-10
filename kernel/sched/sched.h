@@ -967,7 +967,6 @@ struct rq {
 	unsigned long		cpu_capacity_orig;
 
 	struct callback_head	*balance_callback;
-	unsigned char		balance_flags;
 
 	unsigned char		nohz_idle_balance;
 	unsigned char		idle_balance;
@@ -1199,6 +1198,8 @@ struct rq_flags {
 #endif
 };
 
+extern struct callback_head balance_push_callback;
+
 /*
  * Lockdep annotation that avoids accidental unlocks; it's like a
  * sticky/continuous lockdep_assert_held().
@@ -1216,9 +1217,9 @@ static inline void rq_pin_lock(struct rq *rq, struct rq_flags *rf)
 #ifdef CONFIG_SCHED_DEBUG
 	rq->clock_update_flags &= (RQCF_REQ_SKIP|RQCF_ACT_SKIP);
 	rf->clock_update_flags = 0;
-#endif
 #ifdef CONFIG_SMP
-	SCHED_WARN_ON(rq->balance_callback);
+	SCHED_WARN_ON(rq->balance_callback && rq->balance_callback != &balance_push_callback);
+#endif
 #endif
 }
 
@@ -1381,9 +1382,6 @@ init_numa_balancing(unsigned long clone_flags, struct task_struct *p)
 
 #ifdef CONFIG_SMP
 
-#define BALANCE_WORK	0x01
-#define BALANCE_PUSH	0x02
-
 static inline void
 queue_balance_callback(struct rq *rq,
 		       struct callback_head *head,
@@ -1391,13 +1389,12 @@ queue_balance_callback(struct rq *rq,
 {
 	lockdep_assert_held(&rq->lock);
 
-	if (unlikely(head->next || (rq->balance_flags & BALANCE_PUSH)))
+	if (unlikely(head->next || rq->balance_callback == &balance_push_callback))
 		return;
 
 	head->func = (void (*)(struct callback_head *))func;
 	head->next = rq->balance_callback;
 	rq->balance_callback = head;
-	rq->balance_flags |= BALANCE_WORK;
 }
 
 #define rcu_dereference_check_sched_domain(p) \
