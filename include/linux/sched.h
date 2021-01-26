@@ -45,6 +45,7 @@ struct cfs_rq;
 struct fs_struct;
 struct futex_pi_state;
 struct io_context;
+struct io_uring_task;
 struct mempolicy;
 struct nameidata;
 struct nsproxy;
@@ -63,7 +64,6 @@ struct sighand_struct;
 struct signal_struct;
 struct task_delay_info;
 struct task_group;
-struct io_uring_task;
 
 /*
  * Task state bitmask. NOTE! These bits are also
