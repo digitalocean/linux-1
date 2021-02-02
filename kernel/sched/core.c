@@ -136,31 +136,35 @@ static inline bool __sched_core_less(struct task_struct *a, struct task_struct *
 	return false;
 }
 
+#define __node_2_sc(node) rb_entry((node), struct task_struct, core_node)
+
+static inline bool rb_sched_core_less(struct rb_node *a, const struct rb_node *b)
+{
+	return __sched_core_less(__node_2_sc(a), __node_2_sc(b));
+}
+
+static inline int rb_sched_core_cmp(const void *key, const struct rb_node *node)
+{
+	const struct task_struct *p = __node_2_sc(node);
+	unsigned long cookie = (unsigned long)key;
+
+	if (cookie < p->core_cookie)
+		return -1;
+
+	if (cookie > p->core_cookie)
+		return 1;
+
+	return 0;
+}
+
 static void sched_core_enqueue(struct rq *rq, struct task_struct *p)
 {
-	struct rb_node *parent, **node;
-	struct task_struct *node_task;
-
 	rq->core->core_task_seq++;
 
 	if (!p->core_cookie)
 		return;
 
-	node = &rq->core_tree.rb_node;
-	parent = *node;
-
-	while (*node) {
-		node_task = container_of(*node, struct task_struct, core_node);
-		parent = *node;
-
-		if (__sched_core_less(p, node_task))
-			node = &parent->rb_left;
-		else
-			node = &parent->rb_right;
-	}
-
-	rb_link_node(&p->core_node, parent, node);
-	rb_insert_color(&p->core_node, &rq->core_tree);
+	rb_add(&p->core_node, &rq->core_tree, rb_sched_core_less);
 }
 
 static void sched_core_dequeue(struct rq *rq, struct task_struct *p)
@@ -178,28 +182,16 @@ static void sched_core_dequeue(struct rq *rq, struct task_struct *p)
  */
 static struct task_struct *sched_core_find(struct rq *rq, unsigned long cookie)
 {
-	struct rb_node *node = rq->core_tree.rb_node;
-	struct task_struct *node_task, *match;
+	struct rb_node *node;
 
+	node = rb_find_first((void *)cookie, &rq->core_tree, rb_sched_core_cmp);
 	/*
 	 * The idle task always matches any cookie!
 	 */
-	match = idle_sched_class.pick_task(rq);
+	if (!node)
+		return idle_sched_class.pick_task(rq);
 
-	while (node) {
-		node_task = container_of(node, struct task_struct, core_node);
-
-		if (cookie < node_task->core_cookie) {
-			node = node->rb_left;
-		} else if (cookie > node_task->core_cookie) {
-			node = node->rb_right;
-		} else {
-			match = node_task;
-			node = node->rb_left;
-		}
-	}
-
-	return match;
+	return __node_2_sc(node);
 }
 
 static struct task_struct *sched_core_next(struct task_struct *p, unsigned long cookie)
