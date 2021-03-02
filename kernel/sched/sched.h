@@ -1100,6 +1100,11 @@ static inline bool sched_core_enabled(struct rq *rq)
 	return static_branch_unlikely(&__sched_core_enabled) && rq->core_enabled;
 }
 
+static inline bool sched_core_disabled(void)
+{
+	return !static_branch_unlikely(&__sched_core_enabled);
+}
+
 static inline raw_spinlock_t *rq_lockp(struct rq *rq)
 {
 	if (sched_core_enabled(rq))
@@ -1117,6 +1122,11 @@ extern void queue_core_balance(struct rq *rq);
 static inline bool sched_core_enabled(struct rq *rq)
 {
 	return false;
+}
+
+static inline bool sched_core_disabled(void)
+{
+	return true;
 }
 
 static inline raw_spinlock_t *rq_lockp(struct rq *rq)
@@ -2225,10 +2235,12 @@ unsigned long arch_scale_freq_capacity(int cpu)
 }
 #endif
 
-#ifdef CONFIG_SMP
-#ifdef CONFIG_PREEMPTION
 
-static inline void double_rq_lock(struct rq *rq1, struct rq *rq2);
+#ifdef CONFIG_SMP
+
+extern void double_rq_lock(struct rq *rq1, struct rq *rq2);
+
+#ifdef CONFIG_PREEMPTION
 
 /*
  * fair double_lock_balance: Safely acquires both rq->locks in a fair
@@ -2268,14 +2280,13 @@ static inline int _double_lock_balance(struct rq *this_rq, struct rq *busiest)
 	if (likely(raw_spin_rq_trylock(busiest)))
 		return 0;
 
-	if (rq_lockp(busiest) >= rq_lockp(this_rq)) {
+	if (busiest->cpu > this_rq->cpu) {
 		raw_spin_rq_lock_nested(busiest, SINGLE_DEPTH_NESTING);
 		return 0;
 	}
 
 	raw_spin_rq_unlock(this_rq);
-	raw_spin_rq_lock(busiest);
-	raw_spin_rq_lock_nested(this_rq, SINGLE_DEPTH_NESTING);
+	double_rq_lock(this_rq, busiest);
 
 	return 1;
 }
@@ -2325,31 +2336,6 @@ static inline void double_raw_lock(raw_spinlock_t *l1, raw_spinlock_t *l2)
 
 	raw_spin_lock(l1);
 	raw_spin_lock_nested(l2, SINGLE_DEPTH_NESTING);
-}
-
-/*
- * double_rq_lock - safely lock two runqueues
- *
- * Note this does not disable interrupts like task_rq_lock,
- * you need to do so manually before calling.
- */
-static inline void double_rq_lock(struct rq *rq1, struct rq *rq2)
-	__acquires(rq1->lock)
-	__acquires(rq2->lock)
-{
-	BUG_ON(!irqs_disabled());
-	if (rq_lockp(rq1) == rq_lockp(rq2)) {
-		raw_spin_rq_lock(rq1);
-		__acquire(rq2->lock);	/* Fake it out ;) */
-	} else {
-		if (rq_lockp(rq1) < rq_lockp(rq2)) {
-			raw_spin_rq_lock(rq1);
-			raw_spin_rq_lock_nested(rq2, SINGLE_DEPTH_NESTING);
-		} else {
-			raw_spin_rq_lock(rq2);
-			raw_spin_rq_lock_nested(rq1, SINGLE_DEPTH_NESTING);
-		}
-	}
 }
 
 /*
