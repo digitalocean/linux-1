@@ -210,44 +210,77 @@ static struct task_struct *sched_core_next(struct task_struct *p, unsigned long 
 }
 
 /*
- * The static-key + stop-machine variable are needed such that:
+ * Magic required such that:
  *
- *	spin_lock(rq_lockp(rq));
+ *	raw_spin_rq_lock(rq);
  *	...
- *	spin_unlock(rq_lockp(rq));
+ *	raw_spin_rq_unlock(rq);
  *
  * ends up locking and unlocking the _same_ lock, and all CPUs
  * always agree on what rq has what lock.
  *
  * XXX entirely possible to selectively enable cores, don't bother for now.
  */
-static int __sched_core_stopper(void *data)
-{
-	bool enabled = !!(unsigned long)data;
-	int cpu;
-
-	for_each_possible_cpu(cpu)
-		cpu_rq(cpu)->core_enabled = enabled;
-
-	return 0;
-}
 
 static DEFINE_MUTEX(sched_core_mutex);
 static int sched_core_count;
+static struct cpumask sched_core_mask;
+
+static void __sched_core_flip(bool enabled)
+{
+	int cpu, t, i;
+
+	cpus_read_lock();
+
+	/*
+	 * Toggle the online cores, one by one.
+	 */
+	cpumask_copy(&sched_core_mask, cpu_online_mask);
+	for_each_cpu(cpu, &sched_core_mask) {
+		const struct cpumask *smt_mask = cpu_smt_mask(cpu);
+
+		i = 0;
+		local_irq_disable();
+		for_each_cpu(t, smt_mask) {
+			/* supports up to SMT8 */
+			raw_spin_lock_nested(&cpu_rq(t)->__lock, i++);
+		}
+
+		for_each_cpu(t, smt_mask)
+			cpu_rq(t)->core_enabled = enabled;
+
+		for_each_cpu(t, smt_mask)
+			raw_spin_unlock(&cpu_rq(t)->__lock);
+		local_irq_enable();
+
+		cpumask_andnot(&sched_core_mask, &sched_core_mask, smt_mask);
+	}
+
+	/*
+	 * Toggle the offline CPUs.
+	 */
+	cpumask_copy(&sched_core_mask, cpu_possible_mask);
+	cpumask_andnot(&sched_core_mask, &sched_core_mask, cpu_online_mask);
+
+	for_each_cpu(cpu, &sched_core_mask)
+		cpu_rq(cpu)->core_enabled = enabled;
+
+	cpus_read_unlock();
+}
 
 static void __sched_core_enable(void)
 {
 	// XXX verify there are no cookie tasks (yet)
 
 	static_branch_enable(&__sched_core_enabled);
-	stop_machine(__sched_core_stopper, (void *)true, NULL);
+	__sched_core_flip(true);
 }
 
 static void __sched_core_disable(void)
 {
 	// XXX verify there are no cookie tasks (left)
 
-	stop_machine(__sched_core_stopper, (void *)false, NULL);
+	__sched_core_flip(false);
 	static_branch_disable(&__sched_core_enabled);
 }
 
