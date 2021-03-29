@@ -2091,8 +2091,12 @@ const struct cpumask *sched_trace_rd_span(struct root_domain *rd);
 
 #ifdef CONFIG_SCHED_CORE
 extern void sched_core_free(struct task_struct *tsk);
+extern int sched_core_exec(void);
+extern void sched_core_fork(struct task_struct *p);
 #else
 static inline void sched_core_free(struct task_struct *tsk) { }
+static inline int sched_core_exec(void) { return 0; }
+static inline void sched_core_fork(struct task_struct *p) { }
 #endif
 
 #endif

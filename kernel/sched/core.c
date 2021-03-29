@@ -4209,11 +4209,17 @@ unsigned long nr_iowait(void)
  * sched_exec - execve() is a valuable balancing opportunity, because at
  * this point the task has the smallest effective memory and cache footprint.
  */
-void sched_exec(void)
+int sched_exec(void)
 {
 	struct task_struct *p = current;
 	unsigned long flags;
 	int dest_cpu;
+	int ret;
+
+	/* this may change what tasks current can share a core with */
+	ret = sched_core_exec();
+	if (ret)
+		return ret;
 
 	raw_spin_lock_irqsave(&p->pi_lock, flags);
 	dest_cpu = p->sched_class->select_task_rq(p, task_cpu(p), SD_BALANCE_EXEC, 0);
@@ -4225,10 +4231,11 @@ void sched_exec(void)
 
 		raw_spin_unlock_irqrestore(&p->pi_lock, flags);
 		stop_one_cpu(task_cpu(p), migration_cpu_stop, &arg);
-		return;
+		return 0;
 	}
 unlock:
 	raw_spin_unlock_irqrestore(&p->pi_lock, flags);
+	return 0;
 }
 
 #endif

@@ -94,9 +94,9 @@ extern void free_task(struct task_struct *tsk);
 
 /* sched_exec is called by processes performing an exec */
 #ifdef CONFIG_SMP
-extern void sched_exec(void);
+extern int sched_exec(void);
 #else
-#define sched_exec()   {}
+static inline int sched_exec(void) { return 0; }
 #endif
 
 static inline struct task_struct *get_task_struct(struct task_struct *t)

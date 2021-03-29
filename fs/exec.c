@@ -1800,7 +1800,9 @@ static int bprm_execve(struct linux_binprm *bprm,
 	if (IS_ERR(file))
 		goto out_unmark;
 
-	sched_exec();
+	retval = sched_exec();
+	if (retval)
+		goto out;
 
 	bprm->file = file;
 	/*
