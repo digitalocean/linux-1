@@ -100,7 +100,28 @@ static unsigned long sched_core_clone_cookie(struct task_struct *p)
 	return cookie;
 }
 
+void sched_core_fork(struct task_struct *p)
+{
+	RB_CLEAR_NODE(&p->core_node);
+	p->core_cookie = sched_core_clone_cookie(current);
+}
+
 void sched_core_free(struct task_struct *p)
 {
 	sched_core_put_cookie(p->core_cookie);
 }
+
+int sched_core_exec(void)
+{
+	/* absent a policy mech, if task had a cookie, give it a new one */
+	if (current->core_cookie) {
+		unsigned long cookie = sched_core_alloc_cookie();
+		if (!cookie)
+			return -ENOMEM;
+		cookie = sched_core_update_cookie(current, cookie);
+		sched_core_put_cookie(cookie);
+	}
+
+	return 0;
+}
+
