@@ -5134,9 +5134,47 @@ static inline void sched_core_cpu_starting(unsigned int cpu)
 		}
 	}
 }
+
+void sched_core_cgroup_online(struct task_group *parent, struct task_group *tg)
+{
+	lockdep_assert_held(&cgroup_mutex);
+
+	if (parent->core_parent) {
+		WARN_ON_ONCE(parent->core_cookie);
+		WARN_ON_ONCE(!parent->core_parent->core_cookie);
+		tg->core_parent = parent->core_parent;
+
+	} else if (parent->core_cookie) {
+		WARN_ON_ONCE(parent->core_parent);
+		tg->core_parent = parent;
+	}
+}
+
+void sched_core_cgroup_free(struct task_group *tg)
+{
+	sched_core_put_cookie(tg->core_cookie);
+}
+
+unsigned long sched_core_cgroup_cookie(struct task_group *tg)
+{
+	unsigned long cookie = 0;
+
+	lockdep_assert_held(&cgroup_mutex);
+
+	if (tg->core_cookie)
+		cookie = tg->core_cookie;
+	else if (tg->core_parent)
+		cookie = tg->core_parent->core_cookie;
+
+	return sched_core_get_cookie(cookie);
+}
+
 #else /* !CONFIG_SCHED_CORE */
 
 static inline void sched_core_cpu_starting(unsigned int cpu) {}
+
+static inline void sched_core_cgroup_free(struct task_group *tg) { }
+static inline void sched_core_cgroup_online(struct task_group *parent, struct task_group tg) { }
 
 static struct task_struct *
 pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
@@ -8232,6 +8270,7 @@ static void sched_free_group(struct task_group *tg)
 	free_fair_sched_group(tg);
 	free_rt_sched_group(tg);
 	autogroup_free(tg);
+	sched_core_cgroup_free(tg);
 	kmem_cache_free(task_group_cache, tg);
 }
 
@@ -8275,6 +8314,8 @@ void sched_online_group(struct task_group *tg, struct task_group *parent)
 	spin_unlock_irqrestore(&task_group_lock, flags);
 
 	online_fair_sched_group(tg);
+
+	sched_core_cgroup_online(parent, tg);
 }
 
 /* rcu callback to free various structures associated with a task group */
@@ -8336,6 +8377,7 @@ void sched_move_task(struct task_struct *tsk)
 {
 	int queued, running, queue_flags =
 		DEQUEUE_SAVE | DEQUEUE_MOVE | DEQUEUE_NOCLOCK;
+	unsigned long cookie;
 	struct rq_flags rf;
 	struct rq *rq;
 
@@ -8365,6 +8407,10 @@ void sched_move_task(struct task_struct *tsk)
 	}
 
 	task_rq_unlock(rq, tsk, &rf);
+
+	cookie = sched_core_cgroup_cookie(tsk->sched_task_group);
+	cookie = sched_core_update_cookie(tsk, cookie);
+	sched_core_put_cookie(cookie);
 }
 
 static inline struct task_group *css_tg(struct cgroup_subsys_state *css)
@@ -8972,6 +9018,89 @@ static u64 cpu_rt_period_read_uint(struct cgroup_subsys_state *css,
 }
 #endif /* CONFIG_RT_GROUP_SCHED */
 
+#ifdef CONFIG_SCHED_CORE
+u64 cpu_sched_core_read_u64(struct cgroup_subsys_state *css, struct cftype *cft)
+{
+	return !!css_tg(css)->core_cookie;
+}
+
+int cpu_sched_core_write_u64(struct cgroup_subsys_state *css, struct cftype *cft, u64 val)
+{
+	unsigned long cookie = 0, old_cookie = 0;
+	struct task_group *tg = css_tg(css);
+	struct cgroup_subsys_state *cssi;
+	struct task_group *parent = NULL;
+	int ret = 0;
+
+	if (val > 1)
+		return -ERANGE;
+
+	if (!static_branch_likely(&sched_smt_present))
+		return -ENODEV;
+
+	mutex_lock(&cgroup_mutex);
+	if (!!val == !!tg->core_cookie)
+		goto unlock;
+
+	old_cookie = tg->core_cookie;
+	if (val) {
+		cookie = sched_core_alloc_cookie();
+		if (!cookie) {
+			ret = -ENOMEM;
+			goto unlock;
+		}
+		WARN_ON_ONCE(old_cookie);
+
+	} else if (tg->parent) {
+		if (tg->parent->core_parent)
+			parent = tg->parent->core_parent;
+		else if (tg->parent->core_cookie)
+			parent = tg->parent;
+	}
+
+	WARN_ON_ONCE(cookie && parent);
+
+	tg->core_cookie = sched_core_get_cookie(cookie);
+	tg->core_parent = parent;
+
+	if (cookie)
+		parent = tg;
+	else if (parent)
+		cookie = sched_core_get_cookie(parent->core_cookie);
+
+	css_for_each_descendant_pre(cssi, css) {
+		struct task_group *tgi = css_tg(cssi);
+		struct css_task_iter it;
+		struct task_struct *p;
+
+		if (tgi != tg) {
+			if (tgi->core_cookie || (tgi->core_parent && tgi->core_parent != tg))
+				continue;
+
+			tgi->core_parent = parent;
+			tgi->core_cookie = 0;
+		}
+
+		css_task_iter_start(cssi, 0, &it);
+		while ((p = css_task_iter_next(&it))) {
+			unsigned long p_cookie;
+
+			cookie = sched_core_get_cookie(cookie);
+			p_cookie = sched_core_update_cookie(p, cookie);
+			sched_core_put_cookie(p_cookie);
+		}
+		css_task_iter_end(&it);
+	}
+
+unlock:
+	mutex_unlock(&cgroup_mutex);
+
+	sched_core_put_cookie(cookie);
+	sched_core_put_cookie(old_cookie);
+	return ret;
+}
+#endif
+
 static struct cftype cpu_legacy_files[] = {
 #ifdef CONFIG_FAIR_GROUP_SCHED
 	{
@@ -9020,6 +9149,14 @@ static struct cftype cpu_legacy_files[] = {
 		.flags = CFTYPE_NOT_ON_ROOT,
 		.seq_show = cpu_uclamp_max_show,
 		.write = cpu_uclamp_max_write,
+	},
+#endif
+#ifdef CONFIG_SCHED_CORE
+	{
+		.name = "core_sched",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.read_u64 = cpu_sched_core_read_u64,
+		.write_u64 = cpu_sched_core_write_u64,
 	},
 #endif
 	{ }	/* Terminate */
@@ -9201,6 +9338,14 @@ static struct cftype cpu_files[] = {
 		.flags = CFTYPE_NOT_ON_ROOT,
 		.seq_show = cpu_uclamp_max_show,
 		.write = cpu_uclamp_max_write,
+	},
+#endif
+#ifdef CONFIG_SCHED_CORE
+	{
+		.name = "core_sched",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.read_u64 = cpu_sched_core_read_u64,
+		.write_u64 = cpu_sched_core_write_u64,
 	},
 #endif
 	{ }	/* terminate */
