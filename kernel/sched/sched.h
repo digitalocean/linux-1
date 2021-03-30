@@ -424,6 +424,10 @@ struct task_group {
 	struct uclamp_se	uclamp[UCLAMP_CNT];
 #endif
 
+#ifdef CONFIG_SCHED_CORE
+	struct task_group	*core_parent;
+	unsigned long		core_cookie;
+#endif
 };
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
@@ -1094,6 +1098,9 @@ static inline int cpu_of(struct rq *rq)
 
 struct sched_group;
 #ifdef CONFIG_SCHED_CORE
+
+extern struct mutex cgroup_mutex; // XXX
+
 DECLARE_STATIC_KEY_FALSE(__sched_core_enabled);
 static inline struct cpumask *sched_group_span(struct sched_group *sg);
 
