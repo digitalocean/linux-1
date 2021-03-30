@@ -268,18 +268,24 @@ static void __sched_core_flip(bool enabled)
 	cpus_read_unlock();
 }
 
+static void sched_core_assert_empty(void)
+{
+	int cpu;
+
+	for_each_possible_cpu(cpu)
+		WARN_ON_ONCE(!RB_EMPTY_ROOT(&cpu_rq(cpu)->core_tree));
+}
+
 static void __sched_core_enable(void)
 {
-	// XXX verify there are no cookie tasks (yet)
-
 	static_branch_enable(&__sched_core_enabled);
 	__sched_core_flip(true);
+	sched_core_assert_empty();
 }
 
 static void __sched_core_disable(void)
 {
-	// XXX verify there are no cookie tasks (left)
-
+	sched_core_assert_empty();
 	__sched_core_flip(false);
 	static_branch_disable(&__sched_core_enabled);
 }
