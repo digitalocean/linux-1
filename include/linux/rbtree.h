@@ -248,7 +248,7 @@ rb_add(struct rb_node *node, struct rb_root *tree,
  */
 static __always_inline struct rb_node *
 rb_find_add(struct rb_node *node, struct rb_root *tree,
-	    int (*cmp)(struct rb_node *, const struct rb_node *))
+	    int (*cmp)(struct rb_node *, struct rb_node *))
 {
 	struct rb_node **link = &tree->rb_node;
 	struct rb_node *parent = NULL;

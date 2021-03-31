@@ -646,7 +646,7 @@ static inline int __uprobe_cmp_key(const void *key, const struct rb_node *b)
 	return uprobe_cmp(a->inode, a->offset, __node_2_uprobe(b));
 }
 
-static inline int __uprobe_cmp(struct rb_node *a, const struct rb_node *b)
+static inline int __uprobe_cmp(struct rb_node *a, struct rb_node *b)
 {
 	struct uprobe *u = __node_2_uprobe(a);
 	return uprobe_cmp(u->inode, u->offset, __node_2_uprobe(b));
