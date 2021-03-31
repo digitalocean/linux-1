@@ -8409,7 +8409,7 @@ void sched_move_task(struct task_struct *tsk)
 	task_rq_unlock(rq, tsk, &rf);
 
 	cookie = sched_core_cgroup_cookie(tsk->sched_task_group);
-	cookie = sched_core_update_cookie(tsk, cookie);
+	cookie = sched_core_update_cookie(tsk, cookie | GROUP_COOKIE);
 	sched_core_put_cookie(cookie);
 }
 
@@ -8512,6 +8512,10 @@ static int cpu_cgroup_can_attach(struct cgroup_taskset *tset)
 			ret = -EINVAL;
 		raw_spin_unlock_irq(&task->pi_lock);
 
+		if (ret)
+			break;
+
+		ret = sched_core_prealloc_fat(task);
 		if (ret)
 			break;
 	}
@@ -9044,12 +9048,27 @@ int cpu_sched_core_write_u64(struct cgroup_subsys_state *css, struct cftype *cft
 
 	old_cookie = tg->core_cookie;
 	if (val) {
-		cookie = sched_core_alloc_cookie();
+		cookie = sched_core_alloc_cookie(GROUP_COOKIE);
 		if (!cookie) {
 			ret = -ENOMEM;
 			goto unlock;
 		}
 		WARN_ON_ONCE(old_cookie);
+
+		css_for_each_descendant_pre(cssi, css) {
+			struct css_task_iter it;
+			struct task_struct *p;
+
+			css_task_iter_start(cssi, 0, &it);
+			while ((p = css_task_iter_next(&it))) {
+				ret = sched_core_prealloc_fat(p);
+				if (ret) {
+					css_task_iter_end(&it);
+					goto unlock;
+				}
+			}
+			css_task_iter_end(&it);
+		}
 
 	} else if (tg->parent) {
 		if (tg->parent->core_parent)
@@ -9086,7 +9105,7 @@ int cpu_sched_core_write_u64(struct cgroup_subsys_state *css, struct cftype *cft
 			unsigned long p_cookie;
 
 			cookie = sched_core_get_cookie(cookie);
-			p_cookie = sched_core_update_cookie(p, cookie);
+			p_cookie = sched_core_update_cookie(p, cookie | GROUP_COOKIE);
 			sched_core_put_cookie(p_cookie);
 		}
 		css_task_iter_end(&it);
