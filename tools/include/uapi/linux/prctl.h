@@ -250,9 +250,10 @@ struct prctl_mm_map {
 /* Request the scheduler to share a core */
 #define PR_SCHED_CORE			62
 # define PR_SCHED_CORE_GET		0
-# define PR_SCHED_CORE_CREATE		1 /* create unique core_sched cookie */
-# define PR_SCHED_CORE_SHARE_TO		2 /* push core_sched cookie to pid */
-# define PR_SCHED_CORE_SHARE_FROM	3 /* pull core_sched cookie to pid */
-# define PR_SCHED_CORE_MAX		4
+# define PR_SCHED_CORE_CLEAR		1 /* clear core_sched cookie of pid */
+# define PR_SCHED_CORE_CREATE		2 /* create unique core_sched cookie */
+# define PR_SCHED_CORE_SHARE_TO		3 /* push core_sched cookie to pid */
+# define PR_SCHED_CORE_SHARE_FROM	4 /* pull core_sched cookie to pid */
+# define PR_SCHED_CORE_MAX		5
 
 #endif /* _LINUX_PRCTL_H */

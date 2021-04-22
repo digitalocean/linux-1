@@ -44,10 +44,11 @@ static pid_t gettid(void)
 #ifndef PR_SCHED_CORE
 #define PR_SCHED_CORE			62
 # define PR_SCHED_CORE_GET		0
-# define PR_SCHED_CORE_CREATE		1 /* create unique core_sched cookie */
-# define PR_SCHED_CORE_SHARE_TO		2 /* push core_sched cookie to pid */
-# define PR_SCHED_CORE_SHARE_FROM	3 /* pull core_sched cookie to pid */
-# define PR_SCHED_CORE_MAX		4
+# define PR_SCHED_CORE_CLEAR		1 /* clear core_sched cookie of pid */
+# define PR_SCHED_CORE_CREATE		2 /* create unique core_sched cookie */
+# define PR_SCHED_CORE_SHARE_TO		3 /* push core_sched cookie to pid */
+# define PR_SCHED_CORE_SHARE_FROM	4 /* pull core_sched cookie to pid */
+# define PR_SCHED_CORE_MAX		5
 #endif
 
 #define MAX_PROCESSES 128
@@ -310,6 +311,14 @@ int main(int argc, char *argv[])
 	validate(get_cs_cookie(0) == get_cs_cookie(procs[pidx].thr_tids[0]));
 	validate(get_cs_cookie(pid) != get_cs_cookie(procs[pidx].thr_tids[0]));
 
+	printf("\n## Clear a cookie on a single task [%d]\n", pid);
+	if (_prctl(PR_SCHED_CORE, PR_SCHED_CORE_CLEAR, pid, PIDTYPE_PID, 0) < 0)
+		handle_error("core_sched clear failed -- PID");
+	disp_processes(num_processes, procs);
+
+	validate(get_cs_cookie(pid) == 0);
+	validate(get_cs_cookie(procs[pidx].thr_tids[0]) != 0);
+
 	printf("\n## Copy cookie from current [%d] to current as pidtype PGID\n", getpid());
 	if (_prctl(PR_SCHED_CORE, PR_SCHED_CORE_SHARE_TO, 0, PIDTYPE_PGID, 0) < 0)
 		handle_error("core_sched share to self failed -- PGID");
@@ -318,6 +327,15 @@ int main(int argc, char *argv[])
 	validate(get_cs_cookie(0) == get_cs_cookie(pid));
 	validate(get_cs_cookie(pid) != 0);
 	validate(get_cs_cookie(pid) == get_cs_cookie(procs[pidx].thr_tids[0]));
+
+	printf("\n## Clear cookies on the entire process group\n");
+	if (_prctl(PR_SCHED_CORE, PR_SCHED_CORE_CLEAR, 0, PIDTYPE_PGID, 0) < 0)
+		handle_error("core_sched clear failed -- PGID");
+	disp_processes(num_processes, procs);
+
+	validate(get_cs_cookie(0) == 0);
+	validate(get_cs_cookie(pid) == 0);
+	validate(get_cs_cookie(procs[pidx].thr_tids[0]) == 0);
 
 	if (errors) {
 		printf("TESTS FAILED. errors: %d\n", errors);

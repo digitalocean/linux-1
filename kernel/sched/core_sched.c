@@ -174,6 +174,10 @@ int sched_core_share_pid(unsigned int cmd, pid_t pid, enum pid_type type,
 		err = put_user(id, (u64 __user *)uaddr);
 		goto out;
 
+	case PR_SCHED_CORE_CLEAR:
+			cookie = 0;
+			break;
+
 	case PR_SCHED_CORE_CREATE:
 		cookie = sched_core_alloc_cookie();
 		if (!cookie) {
